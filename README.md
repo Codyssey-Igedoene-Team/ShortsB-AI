@@ -6,8 +6,9 @@ KURE-v1을 직접 실행하는 FastAPI 임베딩 서버와 JSONL 사전 생성 �
 
 - app.py: GET /health, POST /embeddings
 - encoder.py: 고정 revision 모델 로딩·warm-up·원문 유지·토큰/벡터 검증
+- prepare_catalog.py: 제공 books.json 구조·해시 검증, 기존 페이지와 UTF-16 위치를 유지한 JSONL 변환
 - precompute.py: 본문 document·고정 카드 query 사전 생성, 해시/중복 확인, 원문 없는 벡터 파일 출력
-- test_contract.py: 모델 다운로드 없이 입력 경계·부분 출력 방지 확인
+- test_contract.py·test_catalog.py: 모델 다운로드 없이 API·입력·원본 위치·부분 출력 방지 확인
 
 Spring은 인증·DB·유사도·카드/프롬프트 가중 조합·균등 무작위·대비 근거 검증·페이지·전체 독서 기록을 담당한다. FastAPI는 텍스트를 벡터로 바꾸며 DB 비밀번호·Google 세션을 받지 않는다. 학습·파인튜닝·런타임 자율 에이전트·생성형 설명 모델은 포함하지 않는다.
 
@@ -97,9 +98,28 @@ POST /embeddings 요청:
 - Spring은 저장된 벡터와 fingerprint·dimension·normalized가 맞는지 확인한다. 모델·라이브러리·설정 변경 시 재생성하고 기존 활성 데이터와 혼합하지 않는다.
 - 모델 준비 실패는 startup 실패다. health만 정상으로 띄우거나 CPU로 조용히 전환하지 않는다.
 
+## 로컬 도서 준비
+
+로컬 구현과 확인을 마친 뒤 서버에 업로드한다. 준비 CLI는 표준 라이브러리만 사용하며 GPU·모델·DB·환경변수가 필요하지 않다. FastAPI 요청 처리와 분리되어 실행한다.
+
+```bash
+python prepare_catalog.py --input ../shortsb-be/docs/shortB-15books-texts/books.json --validate-only
+python prepare_catalog.py --input ../shortsb-be/docs/shortB-15books-texts/books.json --output-dir data/catalog-v1
+```
+
+새 출력 디렉터리를 사용한다. 이미 생성한 data/catalog-v1을 다시 만들려면 다른 버전 경로를 지정한다. 원본 books.json·TXT는 수정하지 않는다.
+
+- segments.jsonl: 기존 pages 하나를 document 구간 하나로 변환. text·SHA-256·외부 bookId·안정 segmentId·1-based pageNo·UTF-16 [startPosition,endPosition) 보존. Java/브라우저 문자열 위치와 일치하도록 보조 평면 문자도 UTF-16 두 단위로 계산한다.
+- catalog-metadata.json: 본문 text/pages를 제외한 판본·출처·번역 안내·원본 챕터 정보. chapters는 원자료의 0-based [start,end) 상태이며 업무 API에서 변환한다. licenseURL/licenseLabel/credits의 null을 임의 보충하지 않는다.
+- manifest.json: 입력 파일 SHA-256·자료 버전·작품/페이지/구간 수·위치 단위·생성 시각. 모델 임베딩 manifest와 구분한다.
+
+도서 수·외부 ID 중복·필수 메타데이터 자료형·빈 페이지·페이지 재결합·전체 해시·쪽수·챕터 범위/정렬/포함 관계·선택 pageIds를 확인한다. 로그에는 본문이나 잘못된 필드 값을 넣지 않는다. 실패하면 완성 디렉터리를 남기지 않고 기존 출력도 덮어쓰지 않는다.
+
+현재 제공 자료는 15개 작품·864페이지이며 최대 페이지 길이는 1,093자다. 현재 CLI는 페이지 내부를 다시 나누지 않는다. 실제 토큰 상한 검증은 precompute.py의 encoder에서 수행하고 초과 시 실패한다. 긴 페이지 자료가 추가되면 표시 페이지를 유지한 내부 구간 분할을 추가한다. 구조·해시 검증은 원작 대비 전문 완전성·이용 권한·대비 근거 승인을 뜻하지 않는다. 현재 자료에 null인 권한 안내 필드가 있으므로 별도 검토가 필요하다.
+
 ## 사전 생성
 
-입력은 Spring/콘텐츠 도구가 준비한 JSONL이다. 제공 books.json 전체를 직접 읽는 가져오기·페이지/검색 구간 분할 기능은 이 서버에 포함하지 않는다. 해당 변환은 원본 페이지·DB/자료 ID를 정하는 작업과 함께 수행한다.
+입력은 위 CLI 또는 Spring/콘텐츠 도구가 준비한 JSONL이다. FastAPI는 요청마다 books.json을 읽거나 페이지를 변경하지 않는다. 외부 bookId·segmentId와 DB 식별자의 연결은 Spring 가져오기에서 관리한다.
 
 본문 document의 필수 필드:
 
@@ -112,18 +132,20 @@ POST /embeddings 요청:
 카드 query는 id·text·contentHash·cardCode가 필요하다. cardCode는 WARM/HUMOR/THOUGHTFUL만 허용한다. 카드 검색 문장과 가중치 최종값은 Spring 계약에서 결정한다. 알 수 없는 필드는 거절한다. CSV 대비 후보를 이 CLI에서 자동 승인하거나 추천 결과로 생성하지 않는다.
 
 ```bash
-python precompute.py --role document --input data/segments.jsonl --output-dir outputs/documents-v1
+python precompute.py --role document --input data/catalog-v1/segments.jsonl --output-dir outputs/documents-v1
 python precompute.py --role query --input data/cards.jsonl --output-dir outputs/cards-v1
 ```
 
 출력 디렉터리는 새 경로여야 한다. 원본 해시·ID 중복·형식 오류면 실패하며 완성 경로를 공개하지 않는다. 성공 시 vectors.jsonl과 manifest.json을 함께 생성한다. vectors에는 원문 text를 저장하지 않고 원본 참조·해시·역할·벡터만 저장한다. manifest는 원본 개수·모델 revision·설정 fingerprint·라이브러리 버전·생성 시각을 포함한다.
+
+고정 카드 3종의 검색 문장은 최종 확정 후 별도 cards.jsonl로 준비한다. ANY는 해당 파일에 포함하지 않는다.
 
 사전 생성과 온라인 모델·설정은 동일하게 유지한다. 파일/manifest를 Spring에 반영하는 DB 작업은 별도다. token 상한 초과가 나오면 입력 담당자가 표시 페이지를 유지하면서 내부 구간만 분할해 안정 ID·해시·위치 매핑을 다시 전달한다.
 
 ## 확인과 남은 작업
 
 ```bash
-python -m unittest -v test_contract
+python -m unittest -v test_contract test_catalog
 ```
 
 표준 라이브러리 검사는 가짜 encoder로 입력·파일 계약을 검증한다. HTTP 검사도 실행하려면 `python -m pip install httpx`로 확인 도구를 추가한다. fastapi/httpx가 없으면 HTTP 항목은 생략된다. GPU 모델 다운로드·추론 품질·HTTP 통합 확인을 대체하지 않는다. 실제 서버에서 revision 설정 → health → query/document → 사전 파일의 모델 설정 일치를 확인하고, 처리 시간·버전을 기록한다.
