@@ -9,14 +9,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from encoder import EmbeddingError, MAX_TEXT_CHARS, Settings, validate_items, validate_vectors
+from encoder import (
+    EmbeddingError, MAX_TEXT_CHARS, Settings, configuration_fingerprint, validate_items, validate_vectors,
+)
 from precompute import batches, generate
 
 
 class FakeEncoder:
     def metadata(self):
-        return {"modelId": "test-model", "revision": "a" * 40, "dimension": 2,
-                "normalized": True, "fingerprint": "test-fingerprint"}
+        config = {"modelId": "test-model", "revision": "a" * 40, "dimension": 2,
+                  "normalized": True, "maxTokens": 128, "preprocessingVersion": "verbatim-v1",
+                  "encoder": "sentence-transformers-encode-float32", "queryPrefix": "",
+                  "documentPrefix": "", "libraries": {key: "test" for key in
+                      ("torch", "sentence-transformers", "transformers", "numpy")}}
+        return {**config, "fingerprint": configuration_fingerprint(config),
+                "device": "cpu", "gpuReady": False}
 
     def embed(self, role, items):
         return {"items": [{"id": item["id"], "embedding": [1.0, 0.0]} for item in items]}

@@ -11,6 +11,17 @@ from importlib.metadata import version
 
 MAX_ITEMS = 8
 MAX_TEXT_CHARS = 32768
+MODEL_CONFIG_FIELDS = (
+    "modelId", "revision", "dimension", "normalized", "maxTokens",
+    "preprocessingVersion", "encoder", "queryPrefix", "documentPrefix", "libraries",
+)
+
+
+def configuration_fingerprint(metadata):
+    config = {key: metadata[key] for key in MODEL_CONFIG_FIELDS}
+    return hashlib.sha256(
+        json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class EmbeddingError(Exception):
@@ -115,9 +126,7 @@ class Encoder:
                           ("torch", "sentence-transformers", "transformers", "numpy")},
         }
         self.config = config
-        self.fingerprint = hashlib.sha256(
-            json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
+        self.fingerprint = configuration_fingerprint(config)
         self.embed("query", [{"id": "warmup", "text": "임베딩 서버 준비 확인"}])
 
     def metadata(self):

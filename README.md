@@ -7,8 +7,10 @@ KURE-v1을 직접 실행하는 FastAPI 임베딩 서버와 JSONL 사전 생성 �
 - app.py: GET /health, POST /embeddings
 - encoder.py: 고정 revision 모델 로딩·warm-up·원문 유지·토큰/벡터 검증
 - prepare_catalog.py: 제공 books.json 구조·해시 검증, 기존 페이지와 UTF-16 위치를 유지한 JSONL 변환
-- precompute.py: 본문 document·고정 카드 query 사전 생성, 해시/중복 확인, 원문 없는 벡터 파일 출력
-- test_contract.py·test_catalog.py: 모델 다운로드 없이 API·입력·원본 위치·부분 출력 방지 확인
+- precompute.py: 모델 없는 입력 검사와 본문 document·고정 카드 query 사전 생성
+- verify_embeddings.py: 원본 ID/위치/해시·벡터·본문/카드 모델 호환성 검사
+- config/cards-v1.jsonl: 카드 3종 검색 문장 초안과 원문 해시
+- test_contract.py·test_catalog.py·test_precompute.py: 모델 다운로드 없이 API·입력·위치·벡터 파일·부분 출력 방지 확인
 
 Spring은 인증·DB·유사도·카드/프롬프트 가중 조합·균등 무작위·대비 근거 검증·페이지·전체 독서 기록을 담당한다. FastAPI는 텍스트를 벡터로 바꾸며 DB 비밀번호·Google 세션을 받지 않는다. 학습·파인튜닝·런타임 자율 에이전트·생성형 설명 모델은 포함하지 않는다.
 
@@ -117,6 +119,25 @@ python prepare_catalog.py --input ../shortsb-be/docs/shortB-15books-texts/books.
 
 현재 제공 자료는 15개 작품·864페이지이며 최대 페이지 길이는 1,093자다. 현재 CLI는 페이지 내부를 다시 나누지 않는다. 실제 토큰 상한 검증은 precompute.py의 encoder에서 수행하고 초과 시 실패한다. 긴 페이지 자료가 추가되면 표시 페이지를 유지한 내부 구간 분할을 추가한다. 구조·해시 검증은 원작 대비 전문 완전성·이용 권한·대비 근거 승인을 뜻하지 않는다. 현재 자료에 null인 권한 안내 필드가 있으므로 별도 검토가 필요하다.
 
+## 로컬 카드 입력과 모델 없는 검사
+
+config/cards-v1.jsonl은 문서에 있던 카드 검색 문장 초안을 실행 가능한 입력 파일로 관리한다. Git에 포함할 수 있는 설정 파일이며 data/의 생성 파일과 구분한다. 검색 품질을 확인한 최종 문장이라는 뜻은 아니다.
+
+| 카드 코드 | 초기 검색 문장 |
+| --- | --- |
+| WARM | 위로와 희망, 사람 사이의 배려와 유대가 느껴지는 이야기 |
+| HUMOR | 재치 있는 대화와 상황, 해학으로 웃음을 주는 이야기 |
+| THOUGHTFUL | 삶과 인간관계, 선택에 관해 질문을 던지고 생각하게 하는 이야기 |
+
+각 카드가 한 번씩 있어야 하며 ANY는 포함하지 않는다. ID에는 입력 버전과 내용 해시 일부를 포함한다. 문장을 변경하면 contentHash와 ID도 함께 갱신하고 새 버전으로 벡터를 생성한다. 카드/프롬프트 점수 가중치는 이 파일에서 정하지 않는다.
+
+```bash
+python precompute.py --role document --input data/catalog-v1/segments.jsonl --validate-only
+python precompute.py --role query --input config/cards-v1.jsonl --validate-only
+```
+
+이 검사는 모델·GPU·환경변수 없이 입력의 ID·해시·위치 형식·카드 누락/중복을 확인한다. 실제 tokenizer 길이·벡터·검색 품질은 검사하지 않는다. 현재 제공 자료의 document 864개와 카드 query 3개 입력이 통과했다.
+
 ## 사전 생성
 
 입력은 위 CLI 또는 Spring/콘텐츠 도구가 준비한 JSONL이다. FastAPI는 요청마다 books.json을 읽거나 페이지를 변경하지 않는다. 외부 bookId·segmentId와 DB 식별자의 연결은 Spring 가져오기에서 관리한다.
@@ -129,26 +150,42 @@ python prepare_catalog.py --input ../shortsb-be/docs/shortB-15books-texts/books.
 - pageNo: 원본 페이지가 있으면 1-based로 전달
 - startPosition/endPosition: 선택. pageNo 필수, UTF-16 기준 [start,end), 0 <= start < end. 실제 페이지 범위 검증은 제공 도구가 담당
 
-카드 query는 id·text·contentHash·cardCode가 필요하다. cardCode는 WARM/HUMOR/THOUGHTFUL만 허용한다. 카드 검색 문장과 가중치 최종값은 Spring 계약에서 결정한다. 알 수 없는 필드는 거절한다. CSV 대비 후보를 이 CLI에서 자동 승인하거나 추천 결과로 생성하지 않는다.
+카드 query는 id·text·contentHash·cardCode가 필요하다. cardCode는 WARM/HUMOR/THOUGHTFUL만 허용한다. 카드 검색 문장은 GPU 검색 결과를 보고 최종 조정하며 가중치 최종값은 Spring 계약에서 결정한다. 카드 파일에는 WARM/HUMOR/THOUGHTFUL이 각각 하나씩 있어야 한다. 알 수 없는 필드는 거절한다. CSV 대비 후보를 이 CLI에서 자동 승인하거나 추천 결과로 생성하지 않는다.
 
 ```bash
 python precompute.py --role document --input data/catalog-v1/segments.jsonl --output-dir outputs/documents-v1
-python precompute.py --role query --input data/cards.jsonl --output-dir outputs/cards-v1
+python precompute.py --role query --input config/cards-v1.jsonl --output-dir outputs/cards-v1
 ```
 
 출력 디렉터리는 새 경로여야 한다. 원본 해시·ID 중복·형식 오류면 실패하며 완성 경로를 공개하지 않는다. 성공 시 vectors.jsonl과 manifest.json을 함께 생성한다. vectors에는 원문 text를 저장하지 않고 원본 참조·해시·역할·벡터만 저장한다. manifest는 원본 개수·모델 revision·설정 fingerprint·라이브러리 버전·생성 시각을 포함한다.
 
-고정 카드 3종의 검색 문장은 최종 확정 후 별도 cards.jsonl로 준비한다. ANY는 해당 파일에 포함하지 않는다.
+현재 카드 입력은 config/cards-v1.jsonl의 초안이다. GPU 결과를 검토해 최종 문구를 결정한다. ANY는 사전 생성하지 않는다.
 
 사전 생성과 온라인 모델·설정은 동일하게 유지한다. 파일/manifest를 Spring에 반영하는 DB 작업은 별도다. token 상한 초과가 나오면 입력 담당자가 표시 페이지를 유지하면서 내부 구간만 분할해 안정 ID·해시·위치 매핑을 다시 전달한다.
+
+## 사전 생성 결과 검사
+
+GPU 서버에서 precompute.py 실행이 끝나면 원본 입력과 결과를 대조한다. 본문을 출력하거나 DB에 반영하지 않는 읽기 전용 검사다.
+
+```bash
+python verify_embeddings.py --input data/catalog-v1/segments.jsonl --output-dir outputs/documents-v1 --require-gpu
+python verify_embeddings.py --input config/cards-v1.jsonl --output-dir outputs/cards-v1 --against-manifest outputs/documents-v1/manifest.json --require-gpu
+```
+
+- 입력/결과의 개수·ID·순서·작품/페이지/위치·해시·역할이 일치해야 한다. 결과에 원문 text가 들어 있어도 실패한다.
+- 벡터 차원·유한 실수·L2 정규화와 manifest의 레코드 수를 확인한다.
+- 설정 fingerprint를 다시 계산하고, 본문/카드의 모델 ID·revision·라이브러리·입력 설정을 비교한다. 일부만 다른 벡터를 함께 사용하지 않는다.
+- --require-gpu는 기록된 device·gpuReady가 GPU 생성 결과인지 확인한다. CPU 합성 검사에서는 생략할 수 있으며 실제 GPU 추론·추천 품질 확인을 대체하지 않는다.
+
+사전 생성 도구도 모델 응답의 ID·개수·벡터를 확인한 뒤 출력한다. 잘못된 응답은 완성 파일로 공개하지 않는다. 검사 성공은 벡터 파일의 일관성을 뜻하며 이용 권한·대비 근거 승인은 별도다.
 
 ## 확인과 남은 작업
 
 ```bash
-python -m unittest -v test_contract test_catalog
+python -m unittest -v test_contract test_catalog test_precompute
 ```
 
-표준 라이브러리 검사는 가짜 encoder로 입력·파일 계약을 검증한다. HTTP 검사도 실행하려면 `python -m pip install httpx`로 확인 도구를 추가한다. fastapi/httpx가 없으면 HTTP 항목은 생략된다. GPU 모델 다운로드·추론 품질·HTTP 통합 확인을 대체하지 않는다. 실제 서버에서 revision 설정 → health → query/document → 사전 파일의 모델 설정 일치를 확인하고, 처리 시간·버전을 기록한다.
+현재 합성 encoder를 사용한 Python/HTTP 검사 20개가 통과했다. 표준 라이브러리 검사는 가짜 encoder로 입력·파일 계약을 검증한다. HTTP 검사도 실행하려면 `python -m pip install httpx`로 확인 도구를 추가한다. fastapi/httpx가 없으면 HTTP 항목은 생략된다. GPU 모델 다운로드·추론 품질·HTTP 통합 확인을 대체하지 않는다. 실제 서버에서 revision 설정 → health → query/document → 사전 파일의 모델 설정 일치를 확인하고, 처리 시간·버전을 기록한다.
 
 페이지 기준은 기존 pages 유지, 발췌량은 min(요청,전체), 신규 전체 독서는 첫 페이지다. ANY 단독은 작품 균등 선택 후 첫 페이지 발췌다. 대비는 검수한 6개 축과 양쪽 근거가 실제 발췌에 포함될 때만 제공하고 없으면 생략한다. 이 정책과 상태 보관·독서 버전 처리는 Spring 담당이다. 공유는 무기한 보류다.
 
