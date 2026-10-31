@@ -1,0 +1,12 @@
+
+# ShortsB AI 로컬 환경·산출물
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+data/
+outputs/
+.cache/
