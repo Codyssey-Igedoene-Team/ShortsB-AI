@@ -14,18 +14,51 @@ KURE-v1을 직접 실행하는 FastAPI 임베딩 서버와 JSONL 사전 생성 �
 
 Spring은 인증·DB·유사도·카드/프롬프트 가중 조합·균등 무작위·대비 근거 검증·페이지·전체 독서 기록을 담당한다. FastAPI는 텍스트를 벡터로 바꾸며 DB 비밀번호·Google 세션을 받지 않는다. 학습·파인튜닝·런타임 자율 에이전트·생성형 설명 모델은 포함하지 않는다.
 
-GPU 사용자의 사전 확인 결과는 Python 3.12.3, NVIDIA L4, PyTorch 2.11.0+cu128, CUDA 사용 가능, KURE-v1의 cuda:0 / (3,1024) 출력이다. 이 프로젝트의 실제 서버 기동·HTTP·전체 도서 batch 검증은 아직 별도 수행이 필요하다.
+실행 구성은 로컬 프론트·Spring·PostgreSQL과 제공 GPU 서버의 FastAPI다. 사용자가 NVIDIA L4에서 실제 FastAPI 기동, `/health` 및 문장 임베딩 200 응답, 본문 864개·카드 3개 사전 생성/산출물 검증, 로컬 DB 등록과 첫 추천·대비 추천 연결 성공을 확인했다. 프런트 전체 흐름과 모든 추천 조합의 검증 완료를 뜻하지는 않는다.
 
 ## 설치와 설정
 
-로컬 VS Code에서는 별도 Python 가상환경을 사용한다. GPU 서버에서는 이미 확인한 환경을 재사용한다.
+### 확인한 실행 환경
+
+| 항목 | 확인한 값 |
+| --- | --- |
+| Python | 3.12.3 |
+| GPU | NVIDIA L4 |
+| PyTorch | 2.11.0+cu128 |
+| Sentence Transformers | 6.2.0 |
+| Transformers | 5.22.1 |
+| NumPy | 2.5.4 |
+| 모델 | nlpai-lab/KURE-v1 |
+| 모델 revision | 8b418a58414668e75532ed045c22d9ca018ae2b2 |
+| 모델 fingerprint | 521e40a63c92f2444806079d8e51436cdee38b8fac6e87309e5b77d706e7206d |
+
+서버의 기존 환경을 재사용하면 가상환경을 활성화하고 프로젝트 폴더로 이동한다. 기존 설치 환경에 패키지를 다시 설치할 필요는 없다.
 
 ```bash
+cd ~/ShortsB-AI
 source /home1/ncloud/ai-venv/bin/activate
-python -m pip install -r requirements.txt
 ```
 
-requirements.txt는 호환 범위다. 서버에서 정상 동작을 확인한 뒤 사용 버전을 기록한다. 사전/온라인은 같은 환경을 사용하며 라이브러리 버전도 fingerprint에 포함한다. 기존 GPU torch를 재설치하거나 시스템 드라이버·CUDA·방화벽을 변경할 필요는 없다.
+새 Linux GPU 환경에서는 Python 3.12와 CUDA 실행이 가능한 NVIDIA 드라이버를 먼저 준비한 후 다음 순서로 설치한다. 제공 GPU 서버의 드라이버·CUDA를 임의 변경하지 않는다. 아래 CUDA 12.8 빌드는 확인한 L4 환경용이며 GTX 1050 등 모든 GPU에 적용되는 설치 방법이 아니다.
+
+```bash
+cd ~/ShortsB-AI
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install "sentence-transformers==6.2.0" "transformers==5.22.1" "numpy==2.5.4" "fastapi>=0.115,<1" "uvicorn>=0.30,<1"
+```
+
+**현재 `requirements.txt`의 `sentence-transformers>=3,<6`은 확인한 서버 버전 6.2.0과 다르다. 기존 산출물을 재사용하는 제출 재현에서는 위 버전 지정 설치를 사용하며, `pip install -r requirements.txt`를 추가로 실행하지 않는다.** 이번 수정은 README에 한정하며 requirements 파일은 변경하지 않았다. FastAPI·Uvicorn의 정확한 서버 버전은 수집되지 않았고 위 범위로 안내한다.
+
+```bash
+python -c "import numpy, torch, sentence_transformers, transformers, fastapi, uvicorn; print('패키지 준비 완료'); print('PyTorch:', torch.__version__); print('GPU 사용 가능:', torch.cuda.is_available())"
+```
+
+사전/온라인은 같은 환경을 사용한다. fingerprint에는 위 주요 라이브러리 버전도 포함되므로 패키지나 모델을 변경하면 원래 산출물과 fingerprint가 달라질 수 있다. 이때 DB fingerprint만 바꾸지 않고 실행 환경을 맞추거나 본문·카드 벡터를 모두 재생성한다.
+
+### 환경변수와 실행
 
 .env.example은 설명과 빈 변수 목록이다. 자동으로 읽지 않는다. VS Code 실행 설정 또는 셸 환경변수로 주입한다. 비밀값이 든 .env는 공유하지 않는다.
 
@@ -37,28 +70,24 @@ requirements.txt는 호환 범위다. 서버에서 정상 동작을 확인한 �
 | MODEL_CACHE_DIR | 선택. 미설정 시 라이브러리 기본 캐시 |
 | EMBEDDING_API_KEY | 선택. 설정하면 health·embeddings에 X-API-Key 필요. 미설정 실행은 loopback/통제된 내부 연결에서만 사용 |
 
-서버에 이미 받은 모델의 revision은 기본 캐시를 사용했다면 아래 파일에서 확인할 수 있다. 다른 캐시를 썼다면 해당 위치를 확인한다.
-
-```bash
-cat ~/.cache/huggingface/hub/models--nlpai-lab--KURE-v1/refs/main
-```
-
-캐시 ref가 없다면 다음은 공개 저장소의 현재 revision을 조회한다. 이 값을 사전/온라인에 동일하게 고정한다.
-
-```bash
-python -c "from huggingface_hub import model_info; print(model_info('nlpai-lab/KURE-v1').sha)"
-```
-
-서버 셸 설정 예시. SHA 자리에는 실제 확인한 값을 넣는다.
+확인한 모델 버전을 아래처럼 고정한다. 모델 revision과 fingerprint는 공개 모델/설정 식별자이며 인증키가 아니다. 현재 터미널에만 적용되므로 새 SSH 접속에서는 다시 설정한다.
 
 ```bash
 export EMBEDDING_MODEL_ID=nlpai-lab/KURE-v1
-export EMBEDDING_MODEL_REVISION=확인한_40자리_SHA
+export EMBEDDING_MODEL_REVISION=8b418a58414668e75532ed045c22d9ca018ae2b2
 export EMBEDDING_DEVICE=cuda
 python -m uvicorn app:app --host 127.0.0.1 --port 8001 --workers 1
 ```
 
-PowerShell 로컬 진단에서는 `$env:EMBEDDING_MODEL_REVISION="확인한_SHA"`, `$env:EMBEDDING_DEVICE="cpu"`처럼 주입한다. CPU 진단도 모델 전체를 다운로드하므로 초기 로컬 작업은 코드·계약 확인을 우선할 수 있다.
+기동 후 GPU 서버에서 확인한다. 다른 터미널을 열거나 서버를 실행한 연결을 유지한다.
+
+```bash
+curl -s http://127.0.0.1:8001/health
+```
+
+`ready: true`, `device: cuda:0`, `gpuReady: true`와 위 revision/fingerprint를 확인한다. `address already in use`가 나오면 기존 FastAPI가 살아 있을 수 있으므로 먼저 이 health를 확인하고 다른 사람의 프로세스를 임의 종료하지 않는다. 인증키를 설정했다면 이 요청에도 같은 `X-API-Key` 헤더가 필요하다. 실제 키는 명령 이력이나 공유 문서에 남기지 않도록 주의한다.
+
+CPU 진단은 `EMBEDDING_DEVICE=cpu`를 명시할 때 가능하지만, Spring은 CPU 응답/CPU 생성 산출물을 거부하므로 제출용 전체 연동 경로는 GPU를 사용한다.
 
 서버 startup에서 한 번 로딩하고 짧은 문장으로 warm-up한다. 최초 모델 다운로드가 필요할 수 있으며, GPU 메모리·모델을 중복 점유하지 않도록 worker 1개와 추론 1개를 사용한다. 사전 CLI와 온라인 서버도 같은 GPU에서 동시에 실행하지 않는다. 실제 시연 실행에 --reload를 사용하지 않는다.
 
@@ -66,13 +95,24 @@ PowerShell 로컬 진단에서는 `$env:EMBEDDING_MODEL_REVISION="확인한_SHA"
 
 제공 매뉴얼은 SSL-VPN 후 사설 IP SSH 접속을 안내한다. 포트·방화벽·GPU 드라이버·CUDA 변경은 운영진 허용 없이 수행하지 않는다. 앱 실행과 SSH forwarding의 허용 정책도 확인한다.
 
-허용된 SSH forwarding을 사용하는 경우 PC에서 다음과 같이 연결할 수 있다. 실제 포트/사용자/사설 주소를 넣고 PC의 VPN·SSH 연결을 유지한다.
+확인한 시연은 VPN 연결 후 PuTTY로 GPU 서버에 접속해 SSH 포워딩을 설정하는 방법이다. PuTTY 창의 `Change Settings → Connection → SSH → Tunnels`에서 다음을 추가하고 `Apply`를 누른다. 이미 같은 항목이 있으면 중복 추가하지 않는다.
+
+| 항목 | 값 |
+| --- | --- |
+| Source port | `18001` |
+| Destination | `127.0.0.1:8001` |
+| 종류 | `Local`, `Auto` |
+| 다른 호스트의 로컬 포트 접속 허용 | 체크하지 않음 |
+
+노트북에서 `http://127.0.0.1:18001/health`에 접속해 모델 정보가 나오면 연결 성공이다. Spring 실행 환경의 `APP_EMBEDDING_BASE_URL=http://127.0.0.1:18001`로 설정한다. VPN과 PuTTY를 유지하며 재접속 후 터널도 확인한다. 같은 PC에서 별도 FastAPI가 18001 포트를 사용하고 있으면 먼저 포트 충돌을 해소한다.
+
+명령줄 SSH를 사용하는 경우 실제 접속 주소·포트·사용자로 대체한다.
 
 ```bash
 ssh -N -L 127.0.0.1:18001:127.0.0.1:8001 -p SSH_PORT USER@PRIVATE_IP
 ```
 
-Spring은 PC의 http://127.0.0.1:18001로 호출한다. FastAPI의 새 외부 포트를 개방하지 않는다. 배포 Spring 서버는 자신의 허용된 접근 경로를 별도로 확인해야 한다. 토큰을 설정하면 Spring도 X-API-Key를 보낸다. 프런트는 FastAPI를 직접 호출하지 않는다.
+FastAPI의 새 외부 포트는 개방하지 않는다. 내부 인증키를 사용한다면 `EMBEDDING_API_KEY`와 Spring의 `APP_EMBEDDING_API_KEY`를 같게 설정하며 프런트는 FastAPI를 직접 호출하지 않는다. 키가 없는 현재 시연 방식은 loopback·VPN·SSH 터널 안에서만 사용한다.
 
 매뉴얼에는 2026-11-01 13:00 서버 삭제 예정이라고 안내돼 있다. 변경/연장 여부는 미확인이다. 벡터·manifest·코드 등 필요한 산출물은 로컬에 보관하고 서버 영구 존속을 전제로 설계하지 않는다.
 
@@ -102,11 +142,32 @@ POST /embeddings 요청:
 
 ## 로컬 도서 준비
 
-로컬 구현과 확인을 마친 뒤 서버에 업로드한다. 준비 CLI는 표준 라이브러리만 사용하며 GPU·모델·DB·환경변수가 필요하지 않다. FastAPI 요청 처리와 분리되어 실행한다.
+현재 카탈로그는 `data/catalog-v1/`, 사전 임베딩 산출물은 `outputs/documents-v1/`과 `outputs/cards-v1/`에 있다. **이 경로들은 `.gitignore` 제외 대상**이므로 GitHub 소스만 받은 환경에는 없을 수 있다. 임베딩 산출물은 아래 링크에서 내려받고 제공된 파일을 다음 위치에 배치한다. 묶음에 없는 원본·카탈로그는 별도로 준비한다.
+
+- [임베딩 산출물 다운로드 — Google Drive](https://drive.google.com/file/d/1CGvm3BOziZGNqz-rcfsDLtORNrPosMtI/view?usp=sharing)
+
+```text
+data/catalog-v1/
+  catalog-metadata.json
+  segments.jsonl
+  manifest.json
+outputs/documents-v1/
+  vectors.jsonl
+  manifest.json
+outputs/cards-v1/
+  vectors.jsonl
+  manifest.json
+```
+
+카탈로그가 있으면 아래 원본 변환을 건너뛴다. 산출물까지 있으면 GPU 사전 생성도 건너뛰고 산출물 검사 후 Spring DB에 등록한다. 산출물만 없으면 사전 생성 절차로 다시 만든다. 서버를 재접속할 때마다 재생성할 필요는 없다.
+
+카탈로그도 없는 경우에는 제출팀에서 원본 `books.json`을 받아 아래 경로에 배치한다. 예시는 `ShortsB-BE`와 `ShortsB-AI`가 같은 상위 폴더에 있는 구성이다. 대소문자를 포함한 실제 폴더명에 맞춰 경로를 조정한다. 원본 없이 출처 URL만으로 동일 AI 한국어 번역판을 재현할 수 있다고 가정하지 않는다.
+
+준비 CLI는 표준 라이브러리만 사용하며 GPU·모델·DB·환경변수가 필요하지 않다. FastAPI 요청 처리와 분리되어 실행한다.
 
 ```bash
-python prepare_catalog.py --input ../shortsb-be/docs/shortB-15books-texts/books.json --validate-only
-python prepare_catalog.py --input ../shortsb-be/docs/shortB-15books-texts/books.json --output-dir data/catalog-v1
+python prepare_catalog.py --input ../ShortsB-BE/docs/shortB-15books-texts/books.json --validate-only
+python prepare_catalog.py --input ../ShortsB-BE/docs/shortB-15books-texts/books.json --output-dir data/catalog-v1
 ```
 
 새 출력 디렉터리를 사용한다. 이미 생성한 data/catalog-v1을 다시 만들려면 다른 버전 경로를 지정한다. 원본 books.json·TXT는 수정하지 않는다.
@@ -152,6 +213,8 @@ python precompute.py --role query --input config/cards-v1.jsonl --validate-only
 
 카드 query는 id·text·contentHash·cardCode가 필요하다. cardCode는 WARM/HUMOR/THOUGHTFUL만 허용한다. 카드 검색 문장은 GPU 검색 결과를 보고 최종 조정하며 가중치 최종값은 Spring 계약에서 결정한다. 카드 파일에는 WARM/HUMOR/THOUGHTFUL이 각각 하나씩 있어야 한다. 알 수 없는 필드는 거절한다. CSV 대비 후보를 이 CLI에서 자동 승인하거나 추천 결과로 생성하지 않는다.
 
+먼저 온라인 FastAPI가 해당 GPU를 점유하고 있다면 정상 종료한다. 같은 가상환경과 위 고정 환경변수를 설정한 상태에서 아래 두 명령을 하나씩 순서대로 실행한다. 본문 생성이 끝난 후 카드 생성을 시작하며, 완료 후 온라인 FastAPI를 다시 실행한다.
+
 ```bash
 python precompute.py --role document --input data/catalog-v1/segments.jsonl --output-dir outputs/documents-v1
 python precompute.py --role query --input config/cards-v1.jsonl --output-dir outputs/cards-v1
@@ -185,7 +248,17 @@ python verify_embeddings.py --input config/cards-v1.jsonl --output-dir outputs/c
 python -m unittest -v test_contract test_catalog test_precompute
 ```
 
-현재 합성 encoder를 사용한 Python/HTTP 검사 20개가 통과했다. 표준 라이브러리 검사는 가짜 encoder로 입력·파일 계약을 검증한다. HTTP 검사도 실행하려면 `python -m pip install httpx`로 확인 도구를 추가한다. fastapi/httpx가 없으면 HTTP 항목은 생략된다. GPU 모델 다운로드·추론 품질·HTTP 통합 확인을 대체하지 않는다. 실제 서버에서 revision 설정 → health → query/document → 사전 파일의 모델 설정 일치를 확인하고, 처리 시간·버전을 기록한다.
+기존 합성 encoder 기반 Python/HTTP 검사 20개 통과 기록은 실제 GPU 확인과 구분한다. HTTP 항목은 추가 도구 `httpx`가 필요하며 이 문서 수정 과정에서 테스트를 실행하지 않았다. 새 테스트 코드는 작성하지 않는다.
+
+2026-11-01 사용자의 실제 실행 보고는 다음과 같다.
+
+- L4 GPU에서 `/health`의 CUDA·GPU 준비 상태 확인, `/embeddings` query 요청 200 응답.
+- 본문 864개와 카드 3개 GPU 사전 생성 및 두 산출물 검사 성공.
+- Spring 로컬 DB에 본문 벡터 864개·카드 3개·추천 설정 1건 등록 확인.
+- VPN·PuTTY 터널을 통해 Spring의 프롬프트 추천과 백야 → B사감과 러브레터 대비 응답 확인.
+- 전체 독서 시작·페이지 조회·위치 저장·이어 읽기, 대비 관계 45개 후보 SQL 적용 성공 보고. 모든 관계의 API 응답·전체 독서 완료·프런트 통합은 별도 확인 필요.
+
+산출물을 로컬로 가져올 때 각 폴더의 `vectors.jsonl`과 `manifest.json`을 함께 전송한다. Spring의 `importCatalog`로 검증·등록하며 경로와 명령은 백엔드 README를 따른다. Spring에 DB 정보와 Google 설정을 주입하고 AI에는 전달하지 않는다. 신규 도서는 별도 승인 전 추천에 나오지 않는다.
 
 페이지 기준은 기존 pages 유지, 발췌량은 min(요청,전체), 신규 전체 독서는 첫 페이지다. ANY 단독은 작품 균등 선택 후 첫 페이지 발췌다. 대비는 검수한 6개 축과 양쪽 근거가 실제 발췌에 포함될 때만 제공하고 없으면 생략한다. 이 정책과 상태 보관·독서 버전 처리는 Spring 담당이다. 공유는 무기한 보류다.
 
